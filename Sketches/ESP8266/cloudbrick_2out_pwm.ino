@@ -1,30 +1,9 @@
 /**
- * IotWebConf06MqttApp.ino -- IotWebConf is an ESP8266/ESP32
- * Example: MQTT Demo Application
+ * CloudBrick
+ * MODEL : 2out-pwm
  * 
- * Description:
- *   All IotWebConf specific aspects of this example are described in
- *   previous examples, so please get familiar with IotWebConf before
- *   starting this example. So nothing new will be explained here, 
- *   but a complete demo application will be build.
- *   It is also expected from the reader to have a basic knowledge over
- *   MQTT to understand this code.
- *   
- *   This example starts an MQTT client with the configured
- *   connection settings.
- *   Will post the status changes of the D2 pin in channel "/test/status".
- *   Receives messages appears in channel "/test/action", and writes them to serial.
- *   This example also provides the firmware update option.
- *   (See previous examples for more details!)
- * 
- * Software setup for this example:
- *   This example utilizes Joel Gaehwiler's MQTT library.
- *   https://github.com/256dpi/arduino-mqtt
- * 
- * Hardware setup for this example:
- *   - An LED is attached to LED_BUILTIN pin with setup On=LOW.
- *   - [Optional] A push button is attached to pin D2, the other leg of the
- *     button should be attached to GND.
+ * This sketch enable you to pilot a dual H-Bridge to have two analog
+ * output to drive motors, leds, and so on.
  */
 
 #include <MQTT.h>
