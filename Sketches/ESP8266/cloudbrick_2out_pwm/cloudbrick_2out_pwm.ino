@@ -4,11 +4,35 @@
  * 
  * This sketch enable you to pilot a dual H-Bridge to have two analog
  * output to drive motors, leds, and so on.
+ * 
+ * This sketch add some configuration parameter, now you can customize:
+ * THING NAME    : the hostname of the device, and the name of this brick in the MQTT broker
+ * AP PASSWORD   : the WIFI password for initialization or in case the configured WiFi is no more reachable
+ *                 this is also the password to access configuration page (username : admin)
+ * WiFi SSID     : the SSID to connect to
+ * WiFi Password : the Password of the Wifi network you want the brick to connect
+ * MQTT server   : FQDN of the MQTT server
+ * MQTT Port     : Port of the MQTT server (usualli 1883 or 8883)
+ * MQTT User     : username to connect to MQTT Server
+ * MQTT Password : password to connect to MQTT Server  
+ * 
+ * Once connected to MQTT broker, this device will 
+ * SUBSCRIBE TO : /CloudBrick/BRC_ESP_<thingname>/Command
+ * PUBLISH TO : /CloudBrick/BRC_ESP_<thingname>/Status
+ *
+ * DEFAULTS
+ * thing name = myBrickThing
+ * wifi password when in AP mode (eg:first start) = mybrickthing
+ * username to access config page : admin
+ * password to access config page : mybrickthing
  */
 
 #include <MQTT.h>
 #include <IotWebConf.h>
+#include <IotWebConfUsing.h>
 #include <ArduinoJson.h>
+#include <ESP8266HTTPUpdateServer.h>
+
 
 //d e f i ne _DEEP_SLEEP
 
@@ -16,9 +40,10 @@
 const char thingName[] = "myBrickThing";
 
 // -- Initial password to connect to the Thing, when it creates an own Access Point.
-const char wifiInitialApPassword[] = "mybrickthing01";
+const char wifiInitialApPassword[] = "mybrickthing";
 
 #define STRING_LEN 128
+#define NUMBER_LEN 10
 
 // -- Configuration specific key. The value should be modified if config structure was changed.
 #define CONFIG_VERSION "out2-pwm_v2"
@@ -31,25 +56,36 @@ const char wifiInitialApPassword[] = "mybrickthing01";
 // -- Callback method declarations.
 void wifiConnected();
 void configSaved();
-boolean formValidator();
+bool formValidator(iotwebconf::WebRequestWrapper* webRequestWrapper);
 void mqttMessageReceived(String &topic, String &payload);
 
 DNSServer dnsServer;
 WebServer server(80);
-HTTPUpdateServer httpUpdater;
-WiFiClient net;
+//HTTPUpdateServer httpUpdater;
+ESP8266HTTPUpdateServer httpUpdater;
+
+WiFiClientSecure net;
 MQTTClient mqttClient;
 
 char mqttServerValue[STRING_LEN];
+char mqttPortValue[NUMBER_LEN];
 char mqttUserNameValue[STRING_LEN];
 char mqttUserPasswordValue[STRING_LEN];
 
 IotWebConf iotWebConf(thingName, &dnsServer, &server, wifiInitialApPassword, CONFIG_VERSION);
 
 // custom parameters in setup
-IotWebConfParameter mqttServerParam = IotWebConfParameter("MQTT server", "mqttServer", mqttServerValue, STRING_LEN);
-IotWebConfParameter mqttUserNameParam = IotWebConfParameter("MQTT user", "mqttUser", mqttUserNameValue, STRING_LEN);
-IotWebConfParameter mqttUserPasswordParam = IotWebConfParameter("MQTT password", "mqttPass", mqttUserPasswordValue, STRING_LEN, "password");
+// --- IotWebConfParameter mqttServerParam = IotWebConfParameter("MQTT server", "mqttServer", mqttServerValue, STRING_LEN);
+// --- IotWebConfParameter mqttUserNameParam = IotWebConfParameter("MQTT user", "mqttUser", mqttUserNameValue, STRING_LEN);
+// --- IotWebConfParameter mqttUserPasswordParam = IotWebConfParameter("MQTT password", "mqttPass", mqttUserPasswordValue, STRING_LEN, "password");
+
+IotWebConfTextParameter mqttServerParam = IotWebConfTextParameter("MQTT server", "mqttServer", mqttServerValue, STRING_LEN);
+IotWebConfTextParameter mqttUserNameParam = IotWebConfTextParameter("MQTT user", "mqttUser", mqttUserNameValue, STRING_LEN);
+IotWebConfTextParameter mqttUserPasswordParam = IotWebConfTextParameter("MQTT password", "mqttPass", mqttUserPasswordValue, STRING_LEN);
+IotWebConfTextParameter mqttPortParam = IotWebConfTextParameter("MQTT port", "mqttPort", mqttPortValue, STRING_LEN);
+
+
+
 
 boolean needMqttConnect = false;
 boolean needReset = false;
@@ -85,7 +121,8 @@ int out1_polarity_PIN2 =4;
 int out2_polarity_PIN1 =1;
 int out2_polarity_PIN2 =3;
 
-
+String status_topic="";
+String command_topic="";
 
 void setup() 
 {
@@ -96,21 +133,30 @@ void setup()
   # endif
   iotWebConf.setStatusPin(STATUS_PIN);
   //iotWebConf.setConfigPin(CONFIG_PIN);
-  iotWebConf.addParameter(&mqttServerParam);
-  iotWebConf.addParameter(&mqttUserNameParam);
-  iotWebConf.addParameter(&mqttUserPasswordParam);
+  iotWebConf.addSystemParameter(&mqttServerParam);
+  iotWebConf.addSystemParameter(&mqttPortParam);
+  iotWebConf.addSystemParameter(&mqttUserNameParam);
+  iotWebConf.addSystemParameter(&mqttUserPasswordParam);
   iotWebConf.setConfigSavedCallback(&configSaved);
   iotWebConf.setFormValidator(&formValidator);
   iotWebConf.setWifiConnectionCallback(&wifiConnected);
-  iotWebConf.setupUpdateServer(&httpUpdater);
+  //iotWebConf.setupUpdateServer(&httpUpdater);
+  // -- Define how to handle updateServer calls.
+  iotWebConf.setupUpdateServer(
+    [](const char* updatePath) { httpUpdater.setup(&server, updatePath); },
+    [](const char* userName, char* password) { httpUpdater.updateCredentials(userName, password); });
 
+    
   // -- Initializing the configuration.
   boolean validConfig = iotWebConf.init();
+  int mqtt_port_value=1883;
   if (!validConfig)
   {
     mqttServerValue[0] = '\0';
     mqttUserNameValue[0] = '\0';
     mqttUserPasswordValue[0] = '\0';
+  }else{
+    mqtt_port_value=atoi(mqttPortValue);
   }
 
   // -- Set up required URL handlers on the web server.
@@ -118,11 +164,15 @@ void setup()
   server.on("/config", []{ iotWebConf.handleConfig(); });
   server.onNotFound([](){ iotWebConf.handleNotFound(); });
 
+  //allow insecure wifi client
+  net.setInsecure();
+
+
   //timeout=10, clean session=1, timeout=100
   //!!! il watchdog scatta a 6 secondi, devo tenermi sotto con il timeout altrimenti va in blocco e viene resettata
   //       con il messaggio del WDT
   mqttClient.setOptions(3, 0, 100);
-  mqttClient.begin(mqttServerValue, net);
+  mqttClient.begin(mqttServerValue, mqtt_port_value, net);
   mqttClient.onMessage(mqttMessageReceived);
 
   #ifdef _DEEP_SLEEP
@@ -168,8 +218,16 @@ void setup()
 
   #endif  
 
+  // set strings after getting ThingName loaded from configuration.
+  status_topic="/CloudBrick/BRC_ESP_";
+  status_topic += iotWebConf.getThingName();
+  status_topic += "/Status";
 
 
+  //command_topic= "/CloudBrick/BRC_ESP_" + iotWebConf.getThingName() + "/Command";
+  command_topic="/CloudBrick/BRC_ESP_";
+  command_topic += iotWebConf.getThingName();
+  command_topic += "/Command";
 }
 
 void loop() 
@@ -187,7 +245,7 @@ void loop()
       needMqttConnect = false;
     }
   }
-  else if ((iotWebConf.getState() == IOTWEBCONF_STATE_ONLINE) && (!mqttClient.connected()))
+  else if ((iotWebConf.getState() == iotwebconf::OnLine) && (!mqttClient.connected()))
   {
     # ifdef _DEBUG_SERIAL
       Serial.println("MQTT reconnect");
@@ -244,12 +302,40 @@ void handleRoot()
     return;
   }
   String s = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
-  s += "<title>Cantylab CloudBrick</title></head><body>Informations";
+  s += "<title>Cantylab CloudBrick</title></head><body>Configuration:";
   s += "<ul>";
   s += "<li>MQTT server: ";
   s += mqttServerValue;
+  s += ":";
+  s += atoi(mqttPortValue);
   s += "</li><li>";
-  s += "brick name: ";
+  s += "MQTT command topic:";
+  s += command_topic;
+  s += "</li><li>";
+  s += "MQTT status topic:";
+  s += status_topic;
+  s += "</li>";
+
+  if (iotWebConf.getState() == iotwebconf::OnLine)
+  {
+    s += "<li>Wifi connected: TRUE</li>";
+    String myIP = WiFi.localIP().toString();
+    s += "<li>IP: "+ myIP+ "</li>";
+  }else
+  {
+    s += "<li>Wifi connected: FALSE</li>";
+  }
+
+  if (mqttClient.connected())
+  {
+    s += "<li>MQTT connected: TRUE</li>";
+  }else
+  {
+    s += "<li>MQTT connected: FALSE</li>";
+  }
+    
+  s += "<li>";
+  s += "Brick name: ";
   s += iotWebConf.getThingName();
   s += "</li></ul>";
   s += "Go to <a href='config'>configure page</a> to change values.";
@@ -270,7 +356,7 @@ void configSaved()
   # endif
   needReset = true;
 }
-
+/*
 boolean formValidator()
 {
   # ifdef _DEBUG_SERIAL
@@ -286,7 +372,27 @@ boolean formValidator()
   }
 
   return valid;
+}*/
+
+
+bool formValidator(iotwebconf::WebRequestWrapper* webRequestWrapper)
+{
+  # ifdef _DEBUG_SERIAL
+  Serial.println("Validating form.");
+  # endif
+  bool valid = true;
+
+
+  int l = webRequestWrapper->arg(mqttServerParam.getId()).length();
+  if (l < 3)
+  {
+    mqttServerParam.errorMessage = "Please provide at least 3 characters for MQTT server!";
+    valid = false;
+  }
+
+  return valid;
 }
+
 
 boolean connectMqtt() {
   unsigned long now = millis();
@@ -305,16 +411,14 @@ boolean connectMqtt() {
   # ifdef _DEBUG_SERIAL
     Serial.println("Connected!");
   # endif
-  String topic="/CloudBrick/BRC_ESP_";
-  topic += iotWebConf.getThingName();
-  topic += "/Command";
+
 
   # ifdef _DEBUG_SERIAL
     Serial.println("Subscribing to topic:");
-    Serial.println(topic);
+    Serial.println(command_topic);
   # endif
   
-  mqttClient.subscribe( topic );
+  mqttClient.subscribe( command_topic );
   return true;
 }
 
@@ -440,11 +544,11 @@ void mqttMessageReceived(String &topic, String &payload)
 }
 
 void publishToStatus(String message){
-  String outTopic="/CloudBrick/BRC_ESP_";
-  outTopic += iotWebConf.getThingName();
-  outTopic += "/Status";
+  //String outTopic="/CloudBrick/BRC_ESP_";
+  //outTopic += iotWebConf.getThingName();
+  //outTopic += "/Status";
 
-  mqttClient.publish(outTopic, message);
+  mqttClient.publish(status_topic, message);
 }
 
 // imposta i parametri per l'uscita del motore1
