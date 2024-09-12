@@ -1,6 +1,6 @@
 /**
  * CloudBrick
- * MODEL : 2out-pwm
+ * MODEL : 2out-pwm, 1out-ipwm
  * 
  * This sketch enable you to pilot a dual H-Bridge to have two analog
  * output to drive motors, leds, and so on.
