@@ -86,7 +86,7 @@ WebServer server(80);
 ESP8266HTTPUpdateServer httpUpdater;
 
 WiFiClientSecure net;
-MQTTClient mqttClient;
+MQTTClient mqttClient(512);
 
 char mqttServerValue[STRING_LEN];
 char mqttPortValue[NUMBER_LEN];
@@ -120,9 +120,9 @@ unsigned long lastMqttConnectionAttempt = 0;
 //ultimo millis a cui ho ricevuto un command
 unsigned long last_cmd_running_time = 0;
 //tempo per cui devo rimanere sveglio dopo l'ultimo comando
-int msec_alive_postcommand=600000;         
+#define msec_alive_postcommand=600000;         
 //tempo di deepsleep - microsecondi prima di svegliarsi nuovamente (MICROSECONDI)
-const int usec_to_deepsleep=180e6; 
+#define usec_to_deepsleep=180e6; 
 
 
 // ----- variabili di stato delle uscite pwm/ipwm-----
@@ -145,23 +145,23 @@ bool use_inverted_pwm=false;
 
 // ----- pinout for Use inverted PWM = FALSE configuration
 // ----- ideal for 1x PWM  2x POLARITY h-bridge (eg: L239D)
-int EN_34_PIN = 12;
-int EN_12_PIN = 14;
+#define  EN_34_PIN  12
+#define  EN_12_PIN  14
 
-int out1_polarity_PIN1 =5;
-int out1_polarity_PIN2 =4;
-int out2_polarity_PIN1 =1;
-int out2_polarity_PIN2 =3;
+#define out1_polarity_PIN1 5
+#define out1_polarity_PIN2 4
+#define out2_polarity_PIN1 1
+#define out2_polarity_PIN2 3
 
 // ----- pinout digital output
-int out3_PIN = 16;
-int out4_PIN = 13;
+#define  out3_PIN  16
+#define  out4_PIN  13
 
 
 // ----- pinout for Use inverted PWM = TRUE configuration
 // ----- ideal for 1x PWM  1x POLARITY h-bridge (eg: MAX1508)
-int out1_ipwm_PIN1 = 12;
-int out1_ipwm_PIN2 = 14;
+#define out1_ipwm_PIN1 12
+#define out1_ipwm_PIN2 14
 //int out2_ipwm_PIN1 = 4;
 //int out2_ipwm_PIN2 = 15;
 
@@ -173,6 +173,10 @@ long  out4_timeout_val = 0;
 
 String status_topic="";
 String command_topic="";
+
+// json static buffer allocation
+StaticJsonDocument<1000> jsonDoc;      //forse anche meno caratteri, ma lo tengo per implementazioni future.
+
 
 void setup() 
 {
@@ -327,8 +331,10 @@ void setupOutput1_ipwm(){
     pinMode( out1_ipwm_PIN1, OUTPUT); 
     pinMode(out1_ipwm_PIN2, OUTPUT); 
 
-    analogWrite(out1_ipwm_PIN1,0); 
-    analogWrite(out1_ipwm_PIN2,0); 
+//    analogWrite(out1_ipwm_PIN1,0); 
+//    analogWrite(out1_ipwm_PIN2,0); 
+    digitalWrite(out1_ipwm_PIN1,LOW);
+    digitalWrite(out1_ipwm_PIN2,LOW);
 }
 
 /*
@@ -535,23 +541,6 @@ void configSaved()
   # endif
   needReset = true;
 }
-/*
-boolean formValidator()
-{
-  # ifdef _DEBUG_SERIAL
-    Serial.println("Validating form.");
-  # endif
-  boolean valid = true;
-
-  int l = server.arg(mqttServerParam.getId()).length();
-  if (l < 3)
-  {
-    mqttServerParam.errorMessage = "Please provide at least 3 characters!";
-    valid = false;
-  }
-
-  return valid;
-}*/
 
 
 bool formValidator(iotwebconf::WebRequestWrapper* webRequestWrapper)
@@ -639,10 +628,12 @@ void mqttMessageReceived(String &topic, String &payload)
     Serial.println("Incoming: " + topic + " - " + payload);
   # endif
 
-  StaticJsonDocument<300> jsonDoc;      //forse anche meno caratteri, ma lo tengo per implementazioni future.
+  publishToStatus("JSON : received >>" + payload +"<<");
+
+//  StaticJsonDocument<300> jsonDoc;      //forse anche meno caratteri, ma lo tengo per implementazioni future.
   auto error = deserializeJson(jsonDoc,payload); // jsonBuffer.parseObject(strPayload);
   String outString="";
-
+  
   
   // se sono in debug con la seriale, flash del led integrato
   # ifdef _DEBUG_SERIAL
@@ -654,7 +645,7 @@ void mqttMessageReceived(String &topic, String &payload)
     #ifdef _DEBUG_SERIAL 
       Serial.println("JSON : parseObject() failed");
     #endif
-    
+    publishToStatus("JSON : parseObject() failed");   
     return;
   }
   
