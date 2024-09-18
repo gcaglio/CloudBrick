@@ -1,4 +1,4 @@
-# CloudBrick 2PWM, 1iPWM, 2digital output
+# CloudBrick 2PWM/1iPWM and 2digital output
 
 ## Feature
 * Wifi captive portal for configuration
